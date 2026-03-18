@@ -406,7 +406,13 @@ const ASSOC_PROGRAM = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bR
 const app = { conn: new Connection('https://api.devnet.solana.com','confirmed'), wallet:null, programId:null, tokenMint:null, dao:null, proposals:[], txLog:[] };
 
 const enc = new TextEncoder(), dec2 = new TextDecoder();
-async function disc(name) { const h = await crypto.subtle.digest('SHA-256', enc.encode(`global:${name}`)); return new Uint8Array(h).slice(0,8); }
+async function disc(name) {
+  // Anchor 0.32 discriminator = sha256("global:<snake_case>")[0..8]
+  // convert camelCase to snake_case just in case
+  const snake = name.replace(/([A-Z])/g, c => '_' + c.toLowerCase());
+  const h = await crypto.subtle.digest('SHA-256', enc.encode(`global:${snake}`));
+  return new Uint8Array(h).slice(0, 8);
+}
 function cat(...arrays) { const len=arrays.reduce((s,a)=>s+a.length,0); const r=new Uint8Array(len); let o=0; for(const a of arrays){r.set(a,o);o+=a.length;} return r; }
 const B = {
   u16: n=>{const b=new Uint8Array(2);new DataView(b.buffer).setUint16(0,n,true);return b;},
@@ -673,7 +679,8 @@ async function doVote(approve) {
   const [dp]=daoPDA();
   const [pp]=proposalPDA(dp,id);
   const [vr]=votePDA(pp,app.wallet.publicKey);
-  const voterAta=ata(app.wallet.publicKey);
+  const voterAta=await getVoterTokenAccount();
+  if(!voterAta){toast('No token account found — transfer tokens to your Phantom first','err');return;}
   const d=cat(await disc('cast_vote'),B.bool(approve));
   const ix=new TransactionInstruction({programId:app.programId,keys:[
     {pubkey:app.wallet.publicKey,   isSigner:true, isWritable:true},
@@ -720,10 +727,23 @@ async function doAirdrop() {
   } catch(e){toast('Airdrop failed (try faucet.solana.com): '+e.message,'err');}
 }
 
+async function getVoterTokenAccount() {
+  if (!app.wallet||!app.tokenMint) return null;
+  try {
+    const accounts = await app.conn.getTokenAccountsByOwner(
+      app.wallet.publicKey, {mint: app.tokenMint}
+    );
+    if (!accounts.value.length) return null;
+    return accounts.value[0].pubkey;
+  } catch(e) { return null; }
+}
+
 async function loadTokenBalance() {
   if (!app.wallet||!app.tokenMint) return;
   try {
-    const info=await app.conn.getTokenAccountBalance(ata(app.wallet.publicKey));
+    const accs=await app.conn.getTokenAccountsByOwner(app.wallet.publicKey,{mint:app.tokenMint});
+    if(!accs.value.length) throw new Error('no account');
+    const info=await app.conn.getTokenAccountBalance(accs.value[0].pubkey);
     document.getElementById('voter-bal').textContent=info.value.uiAmountString+' tokens';
   } catch(e){ document.getElementById('voter-bal').textContent='0 (no token account)'; }
 }
